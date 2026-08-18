@@ -1,58 +1,57 @@
 # ToxSocial Relay
 
-ToxSocial 的可选 Relay 服务端，用于：
+**中文**：ToxSocial 的可选 Relay 服务端，用于用户目录搜索、公开帖子分发、公共频道列表和频道在线成员上报。
 
-- 用户目录搜索（Directory）
-- 公开帖子分发（Outbox）
-- 公共频道列表（Channels）
-- 公共频道在线成员上报（Channel Members）
+**English**: Optional Relay server for ToxSocial. It provides user directory search, public post distribution, public channel listing, and channel member reporting.
 
-支持 Cloudflare Pages + D1，也保留了一个 Cloudflare Worker + KV 版本。
+Supports Cloudflare Pages + D1 (recommended) and a legacy Cloudflare Worker + KV version.
 
-## 部署到 Cloudflare Pages + D1（推荐）
+---
 
-1. 安装 Wrangler 并登录：
+## Deploy to Cloudflare Pages + D1 (Recommended)
+
+1. Install Wrangler and login:
 
    ```bash
    npm install -g wrangler
    wrangler login
    ```
 
-2. 创建 D1 数据库：
+2. Create a D1 database:
 
    ```bash
    wrangler d1 create toxsocial-db
    ```
 
-   把返回的 `database_id` 填到 `wrangler.toml` 的 `[[d1_databases]]`。
+   Put the returned `database_id` into `wrangler.toml` under `[[d1_databases]]`.
 
-3. 初始化数据库表：
+3. Initialize the schema:
 
    ```bash
    wrangler d1 execute toxsocial-db --file=schema.sql
    ```
 
-4. 部署：
+4. Deploy:
 
    ```bash
    wrangler pages deploy public --project-name toxsocial-relay
    ```
 
-5. 绑定自定义域名（可选）：
+5. Optional: bind a custom domain:
 
    ```bash
    wrangler pages project update toxsocial-relay --production-domain your.domain.com
    ```
 
-## 部署到 Cloudflare Worker + KV（旧版）
+## Deploy to Cloudflare Worker + KV (Legacy)
 
-如果你更想用 Worker + KV，可以改用 `wrangler.worker.toml`：
+If you prefer Worker + KV, use `wrangler.worker.toml`:
 
 ```bash
 wrangler deploy -c wrangler.worker.toml
 ```
 
-需要先创建三个 KV namespace：
+Create three KV namespaces first:
 
 ```bash
 wrangler kv:namespace create DIRECTORY
@@ -60,29 +59,29 @@ wrangler kv:namespace create OUTBOX
 wrangler kv:namespace create CHANNELS
 ```
 
-把返回的 id 填到 `wrangler.worker.toml`。
+Put the returned IDs into `wrangler.worker.toml`.
 
-## 客户端配置
+## Client Configuration
 
-在 ToxSocial 桌面端“设置 → Relay 服务器”里填入你的 Relay 地址，例如：
+In the ToxSocial desktop app, open **Settings → Relay Servers** and enter your Relay URL, e.g.:
 
 ```text
 https://your-relay.example.com
 ```
 
-客户端会把目录、公开帖子、公共频道、频道成员上报都切换到该 Relay。
+The client will use this Relay (or multiple Relays) for directory search, public posts, public channels, and channel member reporting.
 
-## API 一览
+## API Overview
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 |---|---|---|
-| GET | `/api/directory?q=` | 搜索用户目录 |
-| POST | `/api/directory` | 注册公开资料 |
-| GET | `/api/outbox?since=` | 拉取公开帖子 |
-| POST | `/api/outbox` | 发布公开帖子 |
-| GET | `/api/channels` | 获取公共频道列表 |
-| POST | `/api/channels` | 注册/更新公共频道 |
-| POST | `/api/channels/members/report` | 上报频道在线成员 |
-| POST | `/api/channels/hosts/add` | 添加 co-host |
-| POST | `/api/channels/hosts/remove` | 移除 co-host |
-| POST | `/api/channels/delete` | 删除公共频道 |
+| GET | `/api/directory?q=` | Search user directory |
+| POST | `/api/directory` | Register public profile |
+| GET | `/api/outbox?since=` | Fetch public posts |
+| POST | `/api/outbox` | Publish public post |
+| GET | `/api/channels` | List public channels |
+| POST | `/api/channels` | Register/update public channel |
+| POST | `/api/channels/members/report` | Report online channel member |
+| POST | `/api/channels/hosts/add` | Add co-host |
+| POST | `/api/channels/hosts/remove` | Remove co-host |
+| POST | `/api/channels/delete` | Delete public channel |
