@@ -1,0 +1,22 @@
+name = "toxsocial-relay"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+account_id = "cec77568f5348765d4d4f929af5633cc"
+workers_dev = true
+
+routes = [
+  { pattern = "vcst.top/*", zone_id = "025a9b71831a4181c8f47a6cd34b0bac" },
+  { pattern = "www.vcst.top/*", zone_id = "025a9b71831a4181c8f47a6cd34b0bac" }
+]
+
+[[kv_namespaces]]
+binding = "DIRECTORY"
+id = "656d6f061785401b9b236612bdbb5eb3"
+
+[[kv_namespaces]]
+binding = "OUTBOX"
+id = "61e8eb86ad1348db813209ce6196b83b"
+
+[[kv_namespaces]]
+binding = "CHANNELS"
+id = "8f3e2238f4854f1fb2c833c3bcf204e7"

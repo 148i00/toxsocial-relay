@@ -1,0 +1,9 @@
+name = "toxsocial-pages"
+pages_build_output_dir = "public"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "toxsocial_db"
+database_name = "toxsocial-db"
+database_id = "1f811875-a9d4-438a-a4a8-6ebacbf2ae8c"
