@@ -26,3 +26,9 @@ CREATE TABLE IF NOT EXISTS channels (
   members TEXT DEFAULT '[]',
   updated_at INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  ip TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_ip_ts ON rate_limits(ip, ts);

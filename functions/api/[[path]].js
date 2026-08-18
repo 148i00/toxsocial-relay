@@ -1,4 +1,8 @@
 // ToxSocial Relay - Cloudflare Pages Functions + D1
+// Basic abuse protection: body size limit, field validation, per-IP rate limit.
+
+const MAX_BODY_BYTES = 20_000;
+const WRITE_LIMIT_PER_MINUTE = 30;
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -6,6 +10,12 @@ export async function onRequest(context) {
   const path = url.pathname;
   const db = env.toxsocial_db;
   if (!db) return json({ error: 'D1 binding not configured' }, 500);
+
+  // Basic per-IP write rate limiting.
+  if (request.method === 'POST') {
+    const limit = await enforceRateLimit(db, request);
+    if (!limit.ok) return json({ error: limit.error }, 429);
+  }
 
   // Directory
   if (path === '/api/directory' && request.method === 'GET') {
@@ -21,8 +31,13 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/directory' && request.method === 'POST') {
-    const body = await request.json();
-    if (!body.pubkey) return json({ error: 'pubkey required' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const body = parsed.body;
+    if (!validPubkey(body.pubkey)) return json({ error: 'invalid pubkey' }, 400);
+    if (body.toxid && !validToxid(body.toxid)) return json({ error: 'invalid toxid' }, 400);
+    if (typeof body.name === 'string' && body.name.length > 128) return json({ error: 'name too long' }, 400);
+    if (typeof body.avatar === 'string' && body.avatar.length > 2000) return json({ error: 'avatar too long' }, 400);
     await db.prepare(
       `INSERT INTO profiles (pubkey, name, toxid, avatar, relay, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -51,8 +66,13 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/outbox' && request.method === 'POST') {
-    const body = await request.json();
-    if (!body.pubkey || !body.id) return json({ error: 'pubkey and id required' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const body = parsed.body;
+    if (!validPubkey(body.pubkey) || !body.id) return json({ error: 'invalid pubkey or id' }, 400);
+    if (typeof body.id !== 'string' || body.id.length > 128) return json({ error: 'id too long' }, 400);
+    if (typeof body.text === 'string' && body.text.length > 50000) return json({ error: 'text too long' }, 400);
+    if (body.sig && !/^[0-9a-fA-F]{0,128}$/.test(body.sig)) return json({ error: 'invalid sig' }, 400);
     await db.prepare(
       `INSERT OR IGNORE INTO posts (id, pubkey, ts, text, sig)
        VALUES (?1, ?2, ?3, ?4, ?5)`
@@ -71,14 +91,19 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/channels' && request.method === 'POST') {
-    const body = await request.json();
-    if (!body.name || !body.hostToxid || !body.channelId) {
-      return json({ error: 'name, hostToxid and channelId required' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const body = parsed.body;
+    if (!body.name || !validToxid(body.hostToxid) || !validChannelId(body.channelId)) {
+      return json({ error: 'name, valid hostToxid and channelId required' }, 400);
     }
+    if (body.name.length > 128 || (body.desc || '').length > 500) return json({ error: 'name/desc too long' }, 400);
     const hosts = body.hosts && body.hosts.length ? body.hosts : [body.hostToxid];
+    if (!Array.isArray(hosts) || !hosts.every(validToxid)) return json({ error: 'invalid hosts' }, 400);
     const members = body.members && body.members.length
       ? body.members.map((m) => ({ toxid: m, ts: Date.now() }))
       : [{ toxid: body.hostToxid, ts: Date.now() }];
+    if (!members.every((m) => validToxid(m.toxid))) return json({ error: 'invalid members' }, 400);
     await db.prepare(
       `INSERT INTO channels (channel_id, name, desc, host_toxid, hosts, members, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -94,9 +119,12 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/channels/hosts/add' && request.method === 'POST') {
-    const body = await request.json();
-    const { channelId, requesterToxid, newHostToxid } = body;
-    if (!channelId || !requesterToxid || !newHostToxid) return json({ error: 'missing' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const { channelId, requesterToxid, newHostToxid } = parsed.body;
+    if (!validChannelId(channelId) || !validToxid(requesterToxid) || !validToxid(newHostToxid)) {
+      return json({ error: 'invalid channel/toxid' }, 400);
+    }
     const row = await db.prepare('SELECT * FROM channels WHERE channel_id = ?1').bind(channelId).first();
     if (!row) return json({ error: 'channel not found' }, 404);
     const hosts = JSON.parse(row.hosts || '[]');
@@ -107,9 +135,12 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/channels/hosts/remove' && request.method === 'POST') {
-    const body = await request.json();
-    const { channelId, requesterToxid, removeHostToxid } = body;
-    if (!channelId || !requesterToxid || !removeHostToxid) return json({ error: 'missing' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const { channelId, requesterToxid, removeHostToxid } = parsed.body;
+    if (!validChannelId(channelId) || !validToxid(requesterToxid) || !validToxid(removeHostToxid)) {
+      return json({ error: 'invalid channel/toxid' }, 400);
+    }
     const row = await db.prepare('SELECT * FROM channels WHERE channel_id = ?1').bind(channelId).first();
     if (!row) return json({ error: 'channel not found' }, 404);
     let hosts = JSON.parse(row.hosts || '[]');
@@ -124,9 +155,10 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/channels/members/report' && request.method === 'POST') {
-    const body = await request.json();
-    const { channelId, memberToxid } = body;
-    if (!channelId || !memberToxid) return json({ error: 'missing' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const { channelId, memberToxid } = parsed.body;
+    if (!validChannelId(channelId) || !validToxid(memberToxid)) return json({ error: 'invalid channel/toxid' }, 400);
     const row = await db.prepare('SELECT * FROM channels WHERE channel_id = ?1').bind(channelId).first();
     if (!row) return json({ error: 'channel not found' }, 404);
     let members = JSON.parse(row.members || '[]');
@@ -139,9 +171,10 @@ export async function onRequest(context) {
   }
 
   if (path === '/api/channels/delete' && request.method === 'POST') {
-    const body = await request.json();
-    const { channelId, hostToxid } = body;
-    if (!channelId || !hostToxid) return json({ error: 'missing' }, 400);
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const { channelId, hostToxid } = parsed.body;
+    if (!validChannelId(channelId) || !validToxid(hostToxid)) return json({ error: 'invalid channel/toxid' }, 400);
     const row = await db.prepare('SELECT * FROM channels WHERE channel_id = ?1').bind(channelId).first();
     if (!row) return json({ error: 'channel not found' }, 404);
     const hosts = JSON.parse(row.hosts || '[]');
@@ -180,6 +213,41 @@ async function ensureMembersColumn(db) {
   } catch {
     // Column already exists or migration is not needed.
   }
+}
+
+async function readJson(request) {
+  const text = await request.text();
+  if (text.length > MAX_BODY_BYTES) return { error: 'body too large' };
+  try {
+    return { body: JSON.parse(text) };
+  } catch {
+    return { error: 'invalid JSON' };
+  }
+}
+
+async function enforceRateLimit(db, request) {
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const now = Date.now();
+  const windowMs = 60_000;
+  await db.prepare('CREATE TABLE IF NOT EXISTS rate_limits (ip TEXT NOT NULL, ts INTEGER NOT NULL)').run();
+  await db.prepare('DELETE FROM rate_limits WHERE ts < ?1').bind(now - windowMs).run();
+  const row = await db.prepare('SELECT COUNT(*) AS c FROM rate_limits WHERE ip = ?1 AND ts >= ?2').bind(ip, now - windowMs).first();
+  const count = row?.c || 0;
+  if (count >= WRITE_LIMIT_PER_MINUTE) return { ok: false, error: 'rate limit exceeded' };
+  await db.prepare('INSERT INTO rate_limits (ip, ts) VALUES (?1, ?2)').bind(ip, now).run();
+  return { ok: true };
+}
+
+function validPubkey(value) {
+  return typeof value === 'string' && /^[0-9a-fA-F]{64}$/.test(value);
+}
+
+function validToxid(value) {
+  return typeof value === 'string' && (/^[0-9a-fA-F]{64}$/.test(value) || /^[0-9a-fA-F]{76}$/.test(value));
+}
+
+function validChannelId(value) {
+  return typeof value === 'string' && /^[0-9a-fA-F]{64}$/.test(value);
 }
 
 function json(data, status = 200) {
