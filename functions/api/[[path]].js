@@ -72,6 +72,14 @@ export async function onRequest(context) {
     if (!validPubkey(body.pubkey) || !body.id) return json({ error: 'invalid pubkey or id' }, 400);
     if (typeof body.id !== 'string' || body.id.length > 128) return json({ error: 'id too long' }, 400);
     if (typeof body.text === 'string' && body.text.length > 50000) return json({ error: 'text too long' }, 400);
+    // Timestamp sanity: authors sign their own ts, so anyone can backdate or
+    // postdate their own posts. Reject clearly impossible dates so forged
+    // "published at" timestamps cannot poison the public timeline.
+    const ts = Number(body.ts);
+    const now = Date.now();
+    if (!Number.isFinite(ts)) return json({ error: 'invalid ts' }, 400);
+    if (ts > now + 5 * 60 * 1000) return json({ error: 'ts too far in the future' }, 400);
+    if (ts < now - 365 * 24 * 60 * 60 * 1000) return json({ error: 'ts too old' }, 400);
     // Ed25519 signature verification (anti-spoofing). The author's Tox
     // public key is an X25519 key; clients upload the matching Ed25519
     // public key (its birational image) and sign `id|pubkey|ts|text|true`.
@@ -81,13 +89,13 @@ export async function onRequest(context) {
     if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(edPk)) {
       return json({ error: 'missing or invalid sig/edPk' }, 400);
     }
-    const dataStr = `${body.id}|${pubkey}|${body.ts}|${String(body.text || '')}|true`;
+    const dataStr = `${body.id}|${pubkey}|${ts}|${String(body.text || '')}|true`;
     const valid = await verifyPostSignature(pubkey, edPk, sig, dataStr);
     if (!valid) return json({ error: 'bad signature' }, 400);
     await db.prepare(
       `INSERT OR IGNORE INTO posts (id, pubkey, ts, text, sig)
        VALUES (?1, ?2, ?3, ?4, ?5)`
-    ).bind(body.id, pubkey, body.ts || Date.now(), String(body.text || ''), sig).run();
+    ).bind(body.id, pubkey, ts, String(body.text || ''), sig).run();
     return json({ ok: true });
   }
 

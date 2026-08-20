@@ -72,15 +72,33 @@ export default {
       if (!validPubkey(body.pubkey) || !body.id) return json({ error: 'invalid pubkey or id' }, 400);
       if (typeof body.id !== 'string' || body.id.length > 128) return json({ error: 'id too long' }, 400);
       if (typeof body.text === 'string' && body.text.length > 50000) return json({ error: 'text too long' }, 400);
-      if (body.sig && !/^[0-9a-fA-F]{0,128}$/.test(body.sig)) return json({ error: 'invalid sig' }, 400);
+      // Timestamp sanity: authors sign their own ts, so anyone can backdate
+      // or postdate their own posts. Reject impossible dates.
+      const ts = Number(body.ts);
+      const now = Date.now();
+      if (!Number.isFinite(ts)) return json({ error: 'invalid ts' }, 400);
+      if (ts > now + 5 * 60 * 1000) return json({ error: 'ts too far in the future' }, 400);
+      if (ts < now - 365 * 24 * 60 * 60 * 1000) return json({ error: 'ts too old' }, 400);
+      // Ed25519 signature verification (anti-spoofing). The author's Tox
+      // public key is an X25519 key; clients upload the matching Ed25519
+      // public key (its birational image) and sign `id|pubkey|ts|text|true`.
+      const pubkey = String(body.pubkey).toLowerCase();
+      const sig = String(body.sig || '').toLowerCase();
+      const edPk = String(body.edPk || '').toLowerCase();
+      if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(edPk)) {
+        return json({ error: 'missing or invalid sig/edPk' }, 400);
+      }
+      const dataStr = `${body.id}|${pubkey}|${ts}|${String(body.text || '')}|true`;
+      const valid = await verifyPostSignature(pubkey, edPk, sig, dataStr);
+      if (!valid) return json({ error: 'bad signature' }, 400);
       const all = (await env.OUTBOX.get('all', 'json')) || [];
-      if (!all.some((x) => x.id === body.id && x.pubkey === body.pubkey)) {
+      if (!all.some((x) => x.id === body.id && x.pubkey === pubkey)) {
         all.push({
-          pubkey: body.pubkey,
+          pubkey,
           id: body.id,
-          ts: body.ts || Date.now(),
-          text: body.text || '',
-          sig: body.sig || '',
+          ts,
+          text: String(body.text || ''),
+          sig,
           type: body.type || 'post',
         });
         await env.OUTBOX.put('all', JSON.stringify(all));
@@ -246,6 +264,72 @@ function json(data, status = 200) {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Ed25519 verification for public posts
+// ---------------------------------------------------------------------------
+// ToxSocial signs public posts by interpreting the Tox secret seed as an
+// Ed25519 seed. The Edwards public key is the birational image of the Tox
+// (X25519) public key: y = (u - 1) / (u + 1) mod p. Clients upload their true
+// Ed25519 public key (`edPk`) together with the signature; here we verify
+// 1) edPk maps back to the author's pubkey, and 2) the standard Ed25519
+// signature holds (WebCrypto).
+
+const ED25519_P = (1n << 255n) - 19n; // 2^255 - 19
+const MODP_MASK = (1n << 255n) - 1n;
+
+function modpow(base, exp, mod) {
+  base %= mod;
+  if (base < 0n) base += mod;
+  let result = 1n;
+  while (exp > 0n) {
+    if (exp & 1n) result = (result * base) % mod;
+    base = (base * base) % mod;
+    exp >>= 1n;
+  }
+  return result;
+}
+
+function hexBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+// Ed25519/X25519 encodings are little-endian; parse hex accordingly.
+function hexLeToBigInt(hex) {
+  let le = '';
+  for (let i = hex.length - 2; i >= 0; i -= 2) {
+    le += hex.slice(i, i + 2);
+  }
+  return BigInt('0x' + le);
+}
+
+async function verifyPostSignature(pubkeyHex, edPkHex, sigHex, dataStr) {
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw', hexBytes(edPkHex), { name: 'Ed25519' }, false, ['verify'],
+    );
+    // Edwards y -> X25519 u = (1 + y) / (1 - y) mod p.
+    const y = hexLeToBigInt(edPkHex) & MODP_MASK;
+    if (y === 1n) return false; // (1 - y) == 0 -> no finite image
+    const denom = modpow((1n - y) % ED25519_P, ED25519_P - 2n, ED25519_P);
+    const u = (((1n + y) % ED25519_P) * denom) % ED25519_P;
+    const wantU = hexLeToBigInt(pubkeyHex) & MODP_MASK;
+    if (u !== wantU) return false; // edPk does not belong to this author
+    const ok = await crypto.subtle.verify(
+      { name: 'Ed25519' },
+      key,
+      hexBytes(sigHex),
+      new TextEncoder().encode(dataStr),
+    );
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function withActiveMembers(channel) {
