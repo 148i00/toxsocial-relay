@@ -73,13 +73,13 @@ export async function onRequest(context) {
     if (typeof body.id !== 'string' || body.id.length > 128) return json({ error: 'id too long' }, 400);
     if (typeof body.text === 'string' && body.text.length > 50000) return json({ error: 'text too long' }, 400);
     // Timestamp sanity: authors sign their own ts, so anyone can backdate or
-    // postdate their own posts. Reject clearly impossible dates so forged
-    // "published at" timestamps cannot poison the public timeline.
+    // postdate their own posts. Require the server clock and the claimed
+    // timestamp to agree within ±15s so forged "published at" times cannot
+    // poison the public timeline.
     const ts = Number(body.ts);
     const now = Date.now();
     if (!Number.isFinite(ts)) return json({ error: 'invalid ts' }, 400);
-    if (ts > now + 5 * 60 * 1000) return json({ error: 'ts too far in the future' }, 400);
-    if (ts < now - 365 * 24 * 60 * 60 * 1000) return json({ error: 'ts too old' }, 400);
+    if (Math.abs(ts - now) > 15_000) return json({ error: 'ts out of sync (±15s)' }, 400);
     // Ed25519 signature verification (anti-spoofing). The author's Tox
     // public key is an X25519 key; clients upload the matching Ed25519
     // public key (its birational image) and sign `id|pubkey|ts|text|true`.
