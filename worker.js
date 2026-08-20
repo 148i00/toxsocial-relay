@@ -57,10 +57,15 @@ export default {
 
     if (path === '/api/outbox' && request.method === 'GET') {
       const pubkey = url.searchParams.get('pubkey');
+      const id = url.searchParams.get('id');
       const since = Number(url.searchParams.get('since') || 0);
       const all = (await env.OUTBOX.get('all', 'json')) || [];
-      let items = all.filter((x) => x.ts > since);
-      if (pubkey) items = items.filter((x) => x.pubkey === pubkey);
+      let items = all;
+      if (id) items = items.filter((x) => x.id === id);
+      else {
+        items = items.filter((x) => x.ts > since);
+        if (pubkey) items = items.filter((x) => x.pubkey === pubkey);
+      }
       items.sort((a, b) => a.ts - b.ts);
       return json({ items });
     }

@@ -54,12 +54,16 @@ export async function onRequest(context) {
   // Outbox
   if (path === '/api/outbox' && request.method === 'GET') {
     const pubkey = url.searchParams.get('pubkey');
+    const id = url.searchParams.get('id');
     const since = Number(url.searchParams.get('since') || 0);
     let stmt = db.prepare('SELECT * FROM posts WHERE ts > ?1');
     if (pubkey) stmt = db.prepare('SELECT * FROM posts WHERE ts > ?1 AND pubkey = ?2');
-    const result = pubkey
-      ? await stmt.bind(since, pubkey).all()
-      : await stmt.bind(since).all();
+    if (id) stmt = db.prepare('SELECT * FROM posts WHERE id = ?1');
+    const result = id
+      ? await stmt.bind(id).all()
+      : pubkey
+        ? await stmt.bind(since, pubkey).all()
+        : await stmt.bind(since).all();
     let items = result.results || [];
     items.sort((a, b) => a.ts - b.ts);
     return json({ items });
