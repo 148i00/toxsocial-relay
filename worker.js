@@ -110,6 +110,27 @@ export default {
       return json({ ok: true });
     }
 
+    if (path === '/api/outbox/delete' && request.method === 'POST') {
+      const parsed = await readJson(request);
+      if (parsed.error) return json({ error: parsed.error }, 400);
+      const body = parsed.body;
+      if (!validPubkey(body.pubkey) || !body.id) return json({ error: 'invalid pubkey or id' }, 400);
+      const pubkey = String(body.pubkey).toLowerCase();
+      const sig = String(body.sig || '').toLowerCase();
+      const edPk = String(body.edPk || '').toLowerCase();
+      if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(edPk)) {
+        return json({ error: 'missing or invalid sig/edPk' }, 400);
+      }
+      const dataStr = `${body.id}|${pubkey}|${body.ts}|${String(body.text || '')}|true`;
+      const valid = await verifyPostSignature(pubkey, edPk, sig, dataStr);
+      if (!valid) return json({ error: 'bad signature' }, 400);
+      let all = (await env.OUTBOX.get('all', 'json')) || [];
+      const before = all.length;
+      all = all.filter((x) => !(x.id === body.id && x.pubkey === pubkey));
+      await env.OUTBOX.put('all', JSON.stringify(all));
+      return json({ ok: true, deleted: all.length < before });
+    }
+
     if (path === '/api/channels' && request.method === 'GET') {
       const all = (await env.CHANNELS.get('all', 'json')) || [];
       return json({ items: all.map(withActiveMembers) });

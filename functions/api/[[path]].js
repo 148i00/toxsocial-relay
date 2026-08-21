@@ -103,6 +103,27 @@ export async function onRequest(context) {
     return json({ ok: true });
   }
 
+  // Delete one of the author's own public posts (signature-verified).
+  if (path === '/api/outbox/delete' && request.method === 'POST') {
+    const parsed = await readJson(request);
+    if (parsed.error) return json({ error: parsed.error }, 400);
+    const body = parsed.body;
+    if (!validPubkey(body.pubkey) || !body.id) return json({ error: 'invalid pubkey or id' }, 400);
+    const pubkey = String(body.pubkey).toLowerCase();
+    const sig = String(body.sig || '').toLowerCase();
+    const edPk = String(body.edPk || '').toLowerCase();
+    if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(edPk)) {
+      return json({ error: 'missing or invalid sig/edPk' }, 400);
+    }
+    // Sign the same canonical string as publish: only the author can delete.
+    const dataStr = `${body.id}|${pubkey}|${body.ts}|${String(body.text || '')}|true`;
+    const valid = await verifyPostSignature(pubkey, edPk, sig, dataStr);
+    if (!valid) return json({ error: 'bad signature' }, 400);
+    const result = await db.prepare('DELETE FROM posts WHERE id = ?1 AND pubkey = ?2')
+      .bind(body.id, pubkey).run();
+    return json({ ok: true, deleted: result.meta.changes > 0 });
+  }
+
   // Channels
   if (path.startsWith('/api/channels')) {
     await ensureMembersColumn(db);
