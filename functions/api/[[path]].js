@@ -201,13 +201,15 @@ export async function onRequest(context) {
   if (path === '/api/channels/members/report' && request.method === 'POST') {
     const parsed = await readJson(request);
     if (parsed.error) return json({ error: parsed.error }, 400);
-    const { channelId, memberToxid } = parsed.body;
+    const { channelId, memberToxid, leave } = parsed.body;
     if (!validChannelId(channelId) || !validToxid(memberToxid)) return json({ error: 'invalid channel/toxid' }, 400);
     const row = await db.prepare('SELECT * FROM channels WHERE channel_id = ?1').bind(channelId).first();
     if (!row) return json({ error: 'channel not found' }, 404);
     let members = JSON.parse(row.members || '[]');
     members = members.filter((m) => m.toxid !== memberToxid);
-    members.push({ toxid: memberToxid, ts: Date.now() });
+    // `leave: true` removes the member immediately (user left/deleted the
+    // channel); otherwise upsert with a fresh heartbeat timestamp.
+    if (!leave) members.push({ toxid: memberToxid, ts: Date.now() });
     if (members.length > 500) members = members.slice(-500);
     await db.prepare('UPDATE channels SET members = ?1 WHERE channel_id = ?2')
       .bind(JSON.stringify(members), channelId).run();

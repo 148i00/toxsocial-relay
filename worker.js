@@ -206,7 +206,7 @@ export default {
     if (path === '/api/channels/members/report' && request.method === 'POST') {
       const parsed = await readJson(request);
       if (parsed.error) return json({ error: parsed.error }, 400);
-      const { channelId, memberToxid } = parsed.body;
+      const { channelId, memberToxid, leave } = parsed.body;
       if (!validChannelId(channelId) || !validToxid(memberToxid)) {
         return json({ error: 'invalid channel/toxid' }, 400);
       }
@@ -215,7 +215,9 @@ export default {
       if (!ch) return json({ error: 'channel not found' }, 404);
       let members = ch.members || [];
       members = members.filter((m) => m.toxid !== memberToxid);
-      members.push({ toxid: memberToxid, ts: Date.now() });
+      // `leave: true` removes the member immediately (user left/deleted the
+      // channel); otherwise upsert with a fresh heartbeat timestamp.
+      if (!leave) members.push({ toxid: memberToxid, ts: Date.now() });
       if (members.length > 500) members = members.slice(-500);
       ch.members = members;
       await env.CHANNELS.put('all', JSON.stringify(all));
