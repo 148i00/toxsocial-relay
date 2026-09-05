@@ -216,6 +216,23 @@ export async function onRequest(context) {
     if (parsed.error) return json({ error: parsed.error }, 400);
     const { channelId, memberToxid, leave } = parsed.body;
     if (!validChannelId(channelId) || !validToxid(memberToxid)) return json({ error: 'invalid channel/toxid' }, 400);
+    // Signed membership heartbeat: `members|{channelId}|{toxid}|{ts}|report|leave`.
+    // Without this anyone could fake another user's presence or kick them.
+    const ts = Number(parsed.body.ts);
+    const now = Date.now();
+    if (!Number.isFinite(ts)) return json({ error: 'invalid ts' }, 400);
+    if (Math.abs(ts - now) > 15_000) return json({ error: 'ts out of sync (±15s)' }, 400);
+    const sig = String(parsed.body.sig || '').toLowerCase();
+    const edPk = String(parsed.body.edPk || '').toLowerCase();
+    if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(edPk)) {
+      return json({ error: 'missing or invalid sig/edPk' }, 400);
+    }
+    const toxidPub = validToxid(memberToxid) && memberToxid.length >= 64 ? memberToxid.slice(0, 64).toLowerCase() : memberToxid.toLowerCase();
+    const action = leave ? 'leave' : 'report';
+    const dataStr = `members|${channelId}|${toxidPub}|${ts}|${action}`;
+    if (!(await verifyPostSignature(toxidPub, edPk, sig, dataStr))) {
+      return json({ error: 'bad signature' }, 400);
+    }
     const row = await db.prepare('SELECT * FROM channels WHERE channel_id = ?1').bind(channelId).first();
     if (!row) return json({ error: 'channel not found' }, 404);
     let members = JSON.parse(row.members || '[]');
