@@ -58,10 +58,12 @@ export default {
     if (path === '/api/outbox' && request.method === 'GET') {
       const pubkey = url.searchParams.get('pubkey');
       const id = url.searchParams.get('id');
+      const community = url.searchParams.get('community');
       const since = Number(url.searchParams.get('since') || 0);
       const all = (await env.OUTBOX.get('all', 'json')) || [];
       let items = all;
       if (id) items = items.filter((x) => x.id === id);
+      else if (community) items = items.filter((x) => (x.community || '') === community);
       else {
         items = items.filter((x) => x.ts > since);
         if (pubkey) items = items.filter((x) => x.pubkey === pubkey);
@@ -95,6 +97,12 @@ export default {
       const dataStr = `${body.id}|${pubkey}|${ts}|${String(body.text || '')}|true`;
       const valid = await verifyPostSignature(pubkey, edPk, sig, dataStr);
       if (!valid) return json({ error: 'bad signature' }, 400);
+      // Optional community scope (64-hex channel id). Metadata only.
+      let community = null;
+      if (body.community !== undefined && body.community !== null && body.community !== '') {
+        community = String(body.community).toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(community)) return json({ error: 'invalid community' }, 400);
+      }
       const all = (await env.OUTBOX.get('all', 'json')) || [];
       if (!all.some((x) => x.id === body.id && x.pubkey === pubkey)) {
         all.push({
@@ -103,6 +111,7 @@ export default {
           ts,
           text: String(body.text || ''),
           sig,
+          community,
           type: body.type || 'post',
         });
         await env.OUTBOX.put('all', JSON.stringify(all));

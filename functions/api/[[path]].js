@@ -53,17 +53,22 @@ export async function onRequest(context) {
 
   // Outbox
   if (path === '/api/outbox' && request.method === 'GET') {
+    await ensurePostsCommunityColumn(db);
     const pubkey = url.searchParams.get('pubkey');
     const id = url.searchParams.get('id');
+    const community = url.searchParams.get('community');
     const since = Number(url.searchParams.get('since') || 0);
     let stmt = db.prepare('SELECT * FROM posts WHERE ts > ?1');
     if (pubkey) stmt = db.prepare('SELECT * FROM posts WHERE ts > ?1 AND pubkey = ?2');
     if (id) stmt = db.prepare('SELECT * FROM posts WHERE id = ?1');
+    if (community) stmt = db.prepare('SELECT * FROM posts WHERE community = ?1');
     const result = id
       ? await stmt.bind(id).all()
-      : pubkey
-        ? await stmt.bind(since, pubkey).all()
-        : await stmt.bind(since).all();
+      : community
+        ? await stmt.bind(community).all()
+        : pubkey
+          ? await stmt.bind(since, pubkey).all()
+          : await stmt.bind(since).all();
     let items = result.results || [];
     items.sort((a, b) => a.ts - b.ts);
     return json({ items });
@@ -96,10 +101,18 @@ export async function onRequest(context) {
     const dataStr = `${body.id}|${pubkey}|${ts}|${String(body.text || '')}|true`;
     const valid = await verifyPostSignature(pubkey, edPk, sig, dataStr);
     if (!valid) return json({ error: 'bad signature' }, 400);
+    // Optional community scope (64-hex channel id). Metadata only — the
+    // signature does not cover it, so it is display/aggregation info.
+    let community = null;
+    if (body.community !== undefined && body.community !== null && body.community !== '') {
+      community = String(body.community).toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(community)) return json({ error: 'invalid community' }, 400);
+    }
+    await ensurePostsCommunityColumn(db);
     await db.prepare(
-      `INSERT OR IGNORE INTO posts (id, pubkey, ts, text, sig)
-       VALUES (?1, ?2, ?3, ?4, ?5)`
-    ).bind(body.id, pubkey, ts, String(body.text || ''), sig).run();
+      `INSERT OR IGNORE INTO posts (id, pubkey, ts, text, sig, community)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+    ).bind(body.id, pubkey, ts, String(body.text || ''), sig, community).run();
     return json({ ok: true });
   }
 
@@ -256,6 +269,14 @@ function parseMembers(raw) {
 async function ensureMembersColumn(db) {
   try {
     await db.prepare("ALTER TABLE channels ADD COLUMN members TEXT DEFAULT '[]'").run();
+  } catch {
+    // Column already exists or migration is not needed.
+  }
+}
+
+async function ensurePostsCommunityColumn(db) {
+  try {
+    await db.prepare('ALTER TABLE posts ADD COLUMN community TEXT').run();
   } catch {
     // Column already exists or migration is not needed.
   }
