@@ -141,8 +141,20 @@ export default {
     }
 
     if (path === '/api/channels' && request.method === 'GET') {
+      const kind = url.searchParams.get('kind') || 'group';
       const all = (await env.CHANNELS.get('all', 'json')) || [];
-      return json({ items: all.map(withActiveMembers) });
+      const items = all
+        .filter((x) => (x.kind || 'group') === kind)
+        .map(withActiveMembers);
+      return json({ items });
+    }
+
+    if (path === '/api/communities' && request.method === 'GET') {
+      const all = (await env.CHANNELS.get('all', 'json')) || [];
+      const items = all
+        .filter((x) => (x.kind || 'group') === 'community')
+        .map(withActiveMembers);
+      return json({ items });
     }
 
     if (path === '/api/channels' && request.method === 'POST') {
@@ -153,6 +165,8 @@ export default {
         return json({ error: 'name, valid hostToxid and channelId required' }, 400);
       }
       if (body.name.length > 128 || (body.desc || '').length > 500) return json({ error: 'name/desc too long' }, 400);
+      let kind = 'group';
+      if (body.kind === 'community') kind = 'community';
       const all = (await env.CHANNELS.get('all', 'json')) || [];
       const hosts = body.hosts && body.hosts.length ? body.hosts : [body.hostToxid];
       if (!Array.isArray(hosts) || !hosts.every(validToxid)) return json({ error: 'invalid hosts' }, 400);
@@ -161,6 +175,7 @@ export default {
         desc: body.desc || '',
         hostToxid: body.hostToxid,
         hosts,
+        kind,
         members: body.members && body.members.length
           ? body.members.map((m) => ({ toxid: m, ts: Date.now() }))
           : [{ toxid: body.hostToxid, ts: Date.now() }],

@@ -144,7 +144,23 @@ export async function onRequest(context) {
 
   if (path === '/api/channels' && request.method === 'GET') {
     const result = await db.prepare('SELECT * FROM channels').all();
-    return json({ items: (result.results || []).map(parseChannel) });
+    // Default listing exposes chat groups only; communities live under
+    // /api/communities (kind filter keeps old clients working).
+    const kind = url.searchParams.get('kind') || 'group';
+    const items = (result.results || []).filter((r) => (r.kind || 'group') === kind);
+    return json({ items: items.map(parseChannel) });
+  }
+
+  // Communities (Reddit-style topic feeds) — same storage, separate namespace.
+  // Listed via /api/channels?kind=community from clients.
+  if (path === '/api/communities' && request.method === 'GET') {
+    const result = await db.prepare('SELECT * FROM channels').all();
+    const items = (result.results || []).filter((r) => (r.kind || 'group') === 'community');
+    return json({ items: items.map(parseChannel) });
+  }
+
+  if (path === '/api/communities' && request.method === 'POST') {
+    return json({ error: 'use /api/channels with kind=community' }, 400);
   }
 
   if (path === '/api/channels' && request.method === 'POST') {
@@ -155,6 +171,10 @@ export async function onRequest(context) {
       return json({ error: 'name, valid hostToxid and channelId required' }, 400);
     }
     if (body.name.length > 128 || (body.desc || '').length > 500) return json({ error: 'name/desc too long' }, 400);
+    // kind: 'group' (chat) or 'community' (topic feed). Defaults to group.
+    let kind = 'group';
+    if (body.kind === 'community') kind = 'community';
+    await ensureChannelsKindColumn(db);
     const hosts = body.hosts && body.hosts.length ? body.hosts : [body.hostToxid];
     if (!Array.isArray(hosts) || !hosts.every(validToxid)) return json({ error: 'invalid hosts' }, 400);
     const members = body.members && body.members.length
@@ -162,16 +182,17 @@ export async function onRequest(context) {
       : [{ toxid: body.hostToxid, ts: Date.now() }];
     if (!members.every((m) => validToxid(m.toxid))) return json({ error: 'invalid members' }, 400);
     await db.prepare(
-      `INSERT INTO channels (channel_id, name, desc, host_toxid, hosts, members, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      `INSERT INTO channels (channel_id, name, desc, host_toxid, hosts, members, kind, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(channel_id) DO UPDATE SET
          name = excluded.name,
          desc = excluded.desc,
          host_toxid = excluded.host_toxid,
          hosts = excluded.hosts,
          members = excluded.members,
+         kind = excluded.kind,
          updated_at = excluded.updated_at`
-    ).bind(body.channelId, body.name, body.desc || '', body.hostToxid, JSON.stringify(hosts), JSON.stringify(members), Date.now()).run();
+    ).bind(body.channelId, body.name, body.desc || '', body.hostToxid, JSON.stringify(hosts), JSON.stringify(members), kind, Date.now()).run();
     return json({ ok: true });
   }
 
@@ -294,6 +315,14 @@ async function ensureMembersColumn(db) {
 async function ensurePostsCommunityColumn(db) {
   try {
     await db.prepare('ALTER TABLE posts ADD COLUMN community TEXT').run();
+  } catch {
+    // Column already exists or migration is not needed.
+  }
+}
+
+async function ensureChannelsKindColumn(db) {
+  try {
+    await db.prepare("ALTER TABLE channels ADD COLUMN kind TEXT DEFAULT 'group'").run();
   } catch {
     // Column already exists or migration is not needed.
   }
