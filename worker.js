@@ -219,6 +219,22 @@ export default {
       if (!validChannelId(channelId) || !validToxid(memberToxid)) {
         return json({ error: 'invalid channel/toxid' }, 400);
       }
+      // Signed membership heartbeat (see functions variant for rationale).
+      const ts = Number(parsed.body.ts);
+      const now = Date.now();
+      if (!Number.isFinite(ts)) return json({ error: 'invalid ts' }, 400);
+      if (Math.abs(ts - now) > 15_000) return json({ error: 'ts out of sync (±15s)' }, 400);
+      const sig = String(parsed.body.sig || '').toLowerCase();
+      const edPk = String(parsed.body.edPk || '').toLowerCase();
+      if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(edPk)) {
+        return json({ error: 'missing or invalid sig/edPk' }, 400);
+      }
+      const toxidPub = memberToxid.length >= 64 ? memberToxid.slice(0, 64).toLowerCase() : memberToxid.toLowerCase();
+      const action = leave ? 'leave' : 'report';
+      const dataStr = `members|${channelId}|${toxidPub}|${ts}|${action}`;
+      if (!(await verifyPostSignature(toxidPub, edPk, sig, dataStr))) {
+        return json({ error: 'bad signature' }, 400);
+      }
       const all = (await env.CHANNELS.get('all', 'json')) || [];
       const ch = all.find((x) => x.channelId === channelId);
       if (!ch) return json({ error: 'channel not found' }, 404);
